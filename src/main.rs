@@ -10,6 +10,9 @@ use std::thread;
 use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
+// Add the auth module
+mod auth;
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -27,6 +30,25 @@ enum Commands {
     
     /// Add a new user interactively
     AddUser,
+
+    /// Generate an authentication token for Aurora DSQL
+    GenerateToken {
+        /// The AWS region (e.g., "us-east-1")
+        #[arg(short, long)]
+        region: Option<String>,
+        
+        /// The cluster endpoint
+        #[arg(short, long)]
+        endpoint: Option<String>,
+        
+        /// Generate a token for the admin user (default: true)
+        #[arg(short, long, default_value_t = true)]
+        admin: bool,
+        
+        /// Just print the token (don't include connection details)
+        #[arg(short, long, default_value_t = false)]
+        token_only: bool,
+    },
 }
 
 /// Create a database connection pool using parameters from .env file
@@ -38,16 +60,26 @@ async fn create_connection_pool() -> Result<PgPool, Box<dyn Error>> {
     let db_host = env::var("DB_HOST").expect("DB_HOST must be set in .env file");
     let db_port = env::var("DB_PORT").expect("DB_PORT must be set in .env file");
     let db_user = env::var("DB_USER").expect("DB_USER must be set in .env file");
-    let db_password = env::var("DB_PASSWORD").expect("DB_PASSWORD must be set in .env file");
     let db_name = env::var("DB_NAME").expect("DB_NAME must be set in .env file");
     
-    // URL encode the password to handle special characters
-    let encoded_password = utf8_percent_encode(&db_password, NON_ALPHANUMERIC).to_string();
+    // Extract region from host
+    let region = String::from("us-east-1");
     
-    // Construct the database URL with the encoded password
+    println!("Generating auth token for connection...");
+    
+    // Determine if we should use admin auth based on the username
+    let admin_auth = db_user.to_lowercase() == "admin";
+    
+    // Generate the authentication token
+    let auth_token = auth::generate_auth_token(&db_host, &region, admin_auth).await?;
+    
+    // URL encode the token to handle special characters
+    let encoded_token = utf8_percent_encode(&auth_token, NON_ALPHANUMERIC).to_string();
+    
+    // Construct the database URL with the encoded token
     let database_url = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        db_user, encoded_password, db_host, db_port, db_name
+        "postgres://{}:{}@{}:{}/{}?sslmode=require",
+        db_user, encoded_token, db_host, db_port, db_name
     );
     
     println!("Database URL constructed from parameters");
@@ -302,26 +334,86 @@ async fn add_user_interactive(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     
-    // Create the database connection pool
-    let pool = create_connection_pool().await?;
-    
     // Execute the appropriate command
     match cli.command {
         Commands::Repopulate => {
+            // Create the database connection pool
+            let pool = create_connection_pool().await?;
             repopulate_database(&pool).await?;
+            // Close the connection pool
+            println!("Closing connection pool...");
+            pool.close().await;
+            println!("Connection closed");
         },
         Commands::ListUsers => {
+            // Create the database connection pool
+            let pool = create_connection_pool().await?;
             list_users(&pool).await?;
+            // Close the connection pool
+            println!("Closing connection pool...");
+            pool.close().await;
+            println!("Connection closed");
         },
         Commands::AddUser => {
+            // Create the database connection pool
+            let pool = create_connection_pool().await?;
             add_user_interactive(&pool).await?;
+            // Close the connection pool
+            println!("Closing connection pool...");
+            pool.close().await;
+            println!("Connection closed");
+        },
+        Commands::GenerateToken { region, endpoint, admin, token_only } => {
+            // Load environment variables
+            dotenv().ok();
+            
+            // Use provided values or fall back to environment variables
+            let region = region.unwrap_or_else(|| {
+                let host = env::var("DB_HOST").expect("DB_HOST must be set in .env file");
+                // Extract region from host - assuming format "<cluster_id>.dsql.<region>.on.aws"
+                host.split('.')
+                    .nth(2)
+                    .unwrap_or("us-east-1")
+                    .to_string()
+            });
+            
+            let endpoint = endpoint.unwrap_or_else(|| {
+                env::var("DB_HOST").expect("DB_HOST must be set in .env file")
+            });
+            
+            // Generate the token
+            let token = auth::generate_auth_token(&endpoint, &region, admin).await?;
+            
+            if token_only {
+                // Just print the token
+                println!("{}", token);
+            } else {
+                // Get user and database name from env or use defaults
+                let user = env::var("DB_USER").unwrap_or_else(|_| {
+                    if admin { "admin".to_string() } else { "postgres".to_string() }
+                });
+                let database = env::var("DB_NAME").unwrap_or_else(|_| "postgres".to_string());
+                let port = env::var("DB_PORT").unwrap_or_else(|_| "5432".to_string())
+                    .parse::<u16>().unwrap_or(5432);
+                
+                // Print connection details
+                println!("Authentication token generated successfully!");
+                println!("Host:     {}", endpoint);
+                println!("Port:     {}", port);
+                println!("User:     {}", user);
+                println!("Database: {}", database);
+                println!("Region:   {}", region);
+                println!("Admin:    {}", if admin { "Yes" } else { "No" });
+                println!("\nToken: {}", token);
+                
+                // Print a sample connection command
+                println!("\nSample connection command:");
+                println!("PGSSLMODE=require psql \"postgresql://{}@{}:{}/{}\" -W", 
+                    user, endpoint, port, database);
+                println!("When prompted for password, use the token shown above.");
+            }
         }
     }
-    
-    // Close the connection pool
-    println!("Closing connection pool...");
-    pool.close().await;
-    println!("Connection closed");
     
     Ok(())
 }
