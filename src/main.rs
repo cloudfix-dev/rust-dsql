@@ -1,5 +1,7 @@
+use clap::{Parser, Subcommand};
+use dialoguer::{Confirm, Input};
 use dotenv::dotenv;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use sqlx::types::{chrono, uuid::Uuid};
 use std::env;
@@ -8,8 +10,27 @@ use std::thread;
 use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Repopulate the database (WARNING: drops existing users table)
+    Repopulate,
+    
+    /// List all users in the database
+    ListUsers,
+    
+    /// Add a new user interactively
+    AddUser,
+}
+
+/// Create a database connection pool using parameters from .env file
+async fn create_connection_pool() -> Result<PgPool, Box<dyn Error>> {
     // Load environment variables from .env file
     dotenv().ok();
     
@@ -40,6 +61,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     println!("Connected successfully!");
     
+    Ok(pool)
+}
+
+/// Repopulate the database with sample data
+async fn repopulate_database(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    // Confirm with the user before proceeding
+    let confirmed = Confirm::new()
+        .with_prompt("WARNING: This will drop the existing users table and all its data. Continue?")
+        .default(false)
+        .interact()?;
+    
+    if !confirmed {
+        println!("Operation cancelled");
+        return Ok(());
+    }
+    
     // Drop and recreate table with retry mechanism
     let max_retries = 3;
     let mut attempt = 0;
@@ -49,7 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Attempt {}/{}: Dropping existing users table if it exists...", attempt, max_retries);
         
         let result = sqlx::query("DROP TABLE IF EXISTS users")
-            .execute(&pool)
+            .execute(pool)
             .await;
             
         if let Err(err) = result {
@@ -74,7 +111,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             "#,
         )
-        .execute(&pool)
+        .execute(pool)
         .await;
         
         match result {
@@ -96,19 +133,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sample_users = vec![
         ("John Doe", "john.doe@example.com", "Admin"),
         ("Jane Smith", "jane.smith@example.com", "User"),
-        ("Bob Johnson", "bob.johnson@example.com", "User"), 
+        ("Bob Johnson", "bob.johnson@example.com", "User"),
         ("Alice Williams", "alice.williams@example.com", "Manager"),
         ("Charlie Brown", "charlie.brown@example.com", "User"),
-        ("David Miller", "david.miller@example.com", "Developer"),
-        ("Emma Davis", "emma.davis@example.com", "User"),
-        ("Frank Wilson", "frank.wilson@example.com", "Manager"),
-        ("Grace Taylor", "grace.taylor@example.com", "Developer"),
-        ("Henry Martin", "henry.martin@example.com", "User"),
-        ("Ivy Chen", "ivy.chen@example.com", "Admin"),
-        ("Jack Thompson", "jack.thompson@example.com", "User"),
-        ("Kelly Anderson", "kelly.anderson@example.com", "Manager"),
-        ("Leo Garcia", "leo.garcia@example.com", "Developer"),
-        ("Maria Rodriguez", "maria.rodriguez@example.com", "User"),
     ];
     
     println!("Inserting sample users...");
@@ -117,57 +144,75 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for (name, email, role) in sample_users {
         let user_id = Uuid::new_v4(); // Generate a new UUID for each user
         
-        let mut insert_attempt = 0;
-        let max_insert_retries = 3;
-        
-        loop {
-            insert_attempt += 1;
-            
-            let result = sqlx::query(
-                r#"
-                INSERT INTO users (id, name, email, role) 
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (email) DO NOTHING
-                "#,
-            )
-            .bind(user_id)
-            .bind(name)
-            .bind(email)
-            .bind(role)
-            .execute(&pool)
-            .await;
-            
-            match result {
-                Ok(result) => {
-                    if result.rows_affected() > 0 {
-                        println!("User '{}' inserted with ID: {}", name, user_id);
-                    } else {
-                        println!("User '{}' already exists", email);
-                    }
-                    break;
-                },
-                Err(err) => {
-                    println!("Error inserting user '{}' (attempt {}/{}): {}", 
-                             name, insert_attempt, max_insert_retries, err);
-                    
-                    if insert_attempt >= max_insert_retries {
-                        return Err(err.into());
-                    }
-                    
-                    thread::sleep(Duration::from_millis(500));
-                }
-            }
+        match insert_user(pool, user_id, name, email, role).await {
+            Ok(_) => println!("User '{}' inserted with ID: {}", name, user_id),
+            Err(e) => println!("Failed to insert user '{}': {}", name, e),
         }
     }
     
-    // Query all users with retry
+    println!("Database has been repopulated successfully");
+    
+    Ok(())
+}
+
+/// Insert a new user into the database
+async fn insert_user(
+    pool: &PgPool, 
+    user_id: Uuid,
+    name: &str,
+    email: &str,
+    role: &str
+) -> Result<(), Box<dyn Error>> {
+    let mut insert_attempt = 0;
+    let max_insert_retries = 3;
+    
+    loop {
+        insert_attempt += 1;
+        
+        let result = sqlx::query(
+            r#"
+            INSERT INTO users (id, name, email, role) 
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (email) DO NOTHING
+            "#,
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(email)
+        .bind(role)
+        .execute(pool)
+        .await;
+        
+        match result {
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    return Ok(());
+                } else {
+                    return Err(format!("User with email '{}' already exists", email).into());
+                }
+            },
+            Err(err) => {
+                println!("Error inserting user '{}' (attempt {}/{}): {}", 
+                        name, insert_attempt, max_insert_retries, err);
+                
+                if insert_attempt >= max_insert_retries {
+                    return Err(err.into());
+                }
+                
+                thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+/// List all users in the database
+async fn list_users(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     println!("Querying all users...");
     
     let mut query_attempt = 0;
     let max_query_retries = 3;
-    let mut users = Vec::new();
     
-    loop {
+    let users = loop {
         query_attempt += 1;
         
         let result = sqlx::query(
@@ -175,13 +220,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             SELECT id, name, email, role, created_at FROM users
             "#
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await;
         
         match result {
             Ok(result) => {
-                users = result;
-                break;
+                break result;
             },
             Err(err) => {
                 println!("Error querying users (attempt {}/{}): {}", 
@@ -194,9 +238,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 thread::sleep(Duration::from_millis(500));
             }
         }
-    }
+    };
     
     println!("Found {} users in database", users.len());
+    
+    if users.is_empty() {
+        println!("No users found in the database.");
+        return Ok(());
+    }
     
     println!("\nUsers in database:");
     for user in users {
@@ -211,8 +260,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     
-    println!("Closing connection pool...");
+    Ok(())
+}
+
+/// Add a new user interactively
+async fn add_user_interactive(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    println!("Adding a new user. Please provide the following information:");
+    
+    let name: String = Input::new()
+        .with_prompt("Name")
+        .interact_text()?;
+    
+    let email: String = Input::new()
+        .with_prompt("Email")
+        .interact_text()?;
+    
+    let role: String = Input::new()
+        .with_prompt("Role (Admin/User/Manager)")
+        .default("User".into())
+        .interact_text()?;
+    
+    let user_id = Uuid::new_v4();
+    
+    match insert_user(pool, user_id, &name, &email, &role).await {
+        Ok(_) => {
+            println!("User added successfully!");
+            println!("User ID: {}", user_id);
+            println!("Name: {}", name);
+            println!("Email: {}", email);
+            println!("Role: {}", role);
+            Ok(())
+        },
+        Err(e) => {
+            println!("Failed to add user: {}", e);
+            Err(e)
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+    
+    // Create the database connection pool
+    let pool = create_connection_pool().await?;
+    
+    // Execute the appropriate command
+    match cli.command {
+        Commands::Repopulate => {
+            repopulate_database(&pool).await?;
+        },
+        Commands::ListUsers => {
+            list_users(&pool).await?;
+        },
+        Commands::AddUser => {
+            add_user_interactive(&pool).await?;
+        }
+    }
+    
     // Close the connection pool
+    println!("Closing connection pool...");
     pool.close().await;
     println!("Connection closed");
     
