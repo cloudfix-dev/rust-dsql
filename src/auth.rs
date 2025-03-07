@@ -3,7 +3,7 @@ use aws_sdk_dsql::auth_token::{AuthTokenGenerator, Config};
 use std::error::Error;
 
 /// Generate an authentication token for Aurora DSQL
-/// 
+///
 /// Args:
 ///   cluster_endpoint: The endpoint of the cluster (format: <cluster_id>.dsql.<region>.on.aws)
 ///   region: The AWS region (e.g. "us-east-1")
@@ -18,7 +18,7 @@ pub async fn generate_auth_token(
 ) -> Result<String, Box<dyn Error>> {
     // Load AWS configuration
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    
+
     // Create the AuthTokenGenerator with the cluster endpoint and region
     let signer = AuthTokenGenerator::new(
         Config::builder()
@@ -35,7 +35,6 @@ pub async fn generate_auth_token(
         signer.db_connect_auth_token(&sdk_config).await
     };
 
-    println!("Token: {:?}", token);
     // Handle result and convert to string
     match token {
         Ok(token) => Ok(token.to_string()),
@@ -55,6 +54,7 @@ pub async fn generate_auth_token(
 ///
 /// Returns:
 ///   A Result containing the connection string
+#[allow(dead_code)]
 pub async fn get_connection_string(
     host: &str,
     port: u16,
@@ -65,16 +65,15 @@ pub async fn get_connection_string(
 ) -> Result<String, Box<dyn Error>> {
     // Generate the auth token
     let token = generate_auth_token(host, region, admin_user).await?;
-    
+
     // Create and return the connection string
     // Note: We use percent_encoding for the password to handle special characters
-    let encoded_token = percent_encoding::utf8_percent_encode(
-        &token,
-        percent_encoding::NON_ALPHANUMERIC
-    ).to_string();
-    
+    let encoded_token =
+        percent_encoding::utf8_percent_encode(&token, percent_encoding::NON_ALPHANUMERIC)
+            .to_string();
+
     Ok(format!(
         "postgres://{}:{}@{}:{}/{}?sslmode=require",
         user, encoded_token, host, port, database
     ))
-} 
+}
