@@ -1,0 +1,11 @@
+[package]
+name = "rust-dsql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "macros", "chrono", "uuid"] }
+dotenv = "0.15.0"
+tokio = { version = "1.35.1", features = ["full"] }
+percent-encoding = "2.3.0"
+uuid = { version = "1.4", features = ["v4", "serde"] }

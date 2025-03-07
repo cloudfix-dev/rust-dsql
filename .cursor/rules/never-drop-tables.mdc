@@ -1,0 +1,6 @@
+---
+description: when writing code to interact with a database, don't drop tables
+globs: *.rs
+alwaysApply: false
+---
+Do not create code which would lead to a DROP TABLES operation without asking me first.
