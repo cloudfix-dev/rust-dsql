@@ -51,6 +51,42 @@ This document outlines the evolution of the Rust PostgreSQL application, highlig
 - Implemented conflict handling for duplicate entries
 - Added comprehensive logging of database operations
 
+## 7 Mar 2025 Updates
+
+### Stress Testing Implementation
+
+- Added a new `StressTest` subcommand with configurable parameters for number of users and concurrency level
+- Implemented batched processing to efficiently manage database connections
+- Created a creative naming system combining medieval first names with Shakespearean last names
+- Generated unique email addresses using UUID-based identifiers to prevent conflicts
+- Added detailed performance metrics (total time, success/failure counts, insert rate)
+
+### Timestamp Handling Improvement
+
+- Migrated from `TIMESTAMP` to `TIMESTAMPTZ` for proper timezone support
+- Updated schema to use `TIMESTAMPTZ` with `DEFAULT CURRENT_TIMESTAMP`
+- Modified Rust code to use `chrono::DateTime<chrono::Utc>` instead of `NaiveDateTime`
+- Ensured all timestamps are properly stored with UTC timezone information
+
+### User Statistics Functionality
+
+- Implemented a comprehensive `UserStats` command to analyze database content
+- Added various statistical metrics:
+  - Total user count and distribution by role
+  - Newest and oldest user details
+  - Creation time distribution by hour
+  - Name length statistics (longest, shortest, average)
+  - Popular first names and common email domains
+  - User creation trends by date
+
+### Performance Testing Results
+
+- Conducted multiple stress tests with varying user counts and concurrency levels
+- Achieved consistent throughput of ~18 users/second regardless of concurrency
+- Demonstrated Aurora DSQL's ability to handle high concurrency (10-50 threads)
+- Maintained 100% insert success rate across all tests
+- Verified data integrity through statistical analysis
+
 ## Final Implementation
 
 The final implementation successfully:
@@ -60,5 +96,7 @@ The final implementation successfully:
 - Implements a robust retry mechanism for handling transient database errors
 - Includes proper error handling and logging
 - Demonstrates complete database operations (create table, insert, query)
+- Provides comprehensive stress testing capabilities
+- Offers detailed statistical analysis of database content
 
 This project serves as a good reference for connecting Rust applications to PostgreSQL-compatible cloud databases, especially those with unique compatibility requirements like Aurora DSQL. 

@@ -31,6 +31,20 @@ enum Commands {
     /// Add a new user interactively
     AddUser,
 
+    /// Stress test the database with parallel inserts
+    StressTest {
+        /// Number of users to insert (default: 100)
+        #[arg(short, long, default_value_t = 100)]
+        users: usize,
+
+        /// Number of concurrent inserts (default: 10)
+        #[arg(short, long, default_value_t = 10)]
+        concurrency: usize,
+    },
+
+    /// Display statistics about users in the database
+    UserStats,
+
     /// Generate an authentication token for Aurora DSQL
     GenerateToken {
         /// The AWS region (e.g., "us-east-1")
@@ -52,7 +66,7 @@ enum Commands {
 }
 
 /// Create a database connection pool using parameters from .env file
-async fn create_connection_pool() -> Result<PgPool, Box<dyn Error>> {
+async fn create_connection_pool() -> Result<PgPool, Box<dyn Error + Send + Sync>> {
     // Load environment variables from .env file
     dotenv().ok();
 
@@ -97,7 +111,7 @@ async fn create_connection_pool() -> Result<PgPool, Box<dyn Error>> {
 }
 
 /// Repopulate the database with sample data
-async fn repopulate_database(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+async fn repopulate_database(pool: &PgPool) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Confirm with the user before proceeding
     let confirmed = Confirm::new()
         .with_prompt("WARNING: This will drop the existing users table and all its data. Continue?")
@@ -145,7 +159,7 @@ async fn repopulate_database(pool: &PgPool) -> Result<(), Box<dyn Error>> {
                 name VARCHAR(100) NOT NULL,
                 email VARCHAR(100) UNIQUE NOT NULL,
                 role VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             "#,
         )
@@ -200,7 +214,7 @@ async fn insert_user(
     name: &str,
     email: &str,
     role: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut insert_attempt = 0;
     let max_insert_retries = 3;
 
@@ -246,7 +260,7 @@ async fn insert_user(
 }
 
 /// List all users in the database
-async fn list_users(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+async fn list_users(pool: &PgPool) -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("Querying all users...");
 
     let mut query_attempt = 0;
@@ -291,14 +305,14 @@ async fn list_users(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 
     println!("\nUsers in database:");
     for user in users {
-        // Use NaiveDateTime instead of DateTime<Utc> to match the TIMESTAMP type
+        // Use DateTime<Utc> instead of NaiveDateTime to match the TIMESTAMPTZ type
         println!(
             "ID: {}, Name: {}, Email: {}, Role: {}, Created at: {}",
             user.get::<Uuid, _>("id"),
             user.get::<String, _>("name"),
             user.get::<String, _>("email"),
             user.get::<String, _>("role"),
-            user.get::<chrono::NaiveDateTime, _>("created_at")
+            user.get::<chrono::DateTime<chrono::Utc>, _>("created_at")
         );
     }
 
@@ -306,7 +320,7 @@ async fn list_users(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 }
 
 /// Add a new user interactively
-async fn add_user_interactive(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+async fn add_user_interactive(pool: &PgPool) -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("Adding a new user. Please provide the following information:");
 
     let name: String = Input::new().with_prompt("Name").interact_text()?;
@@ -336,8 +350,358 @@ async fn add_user_interactive(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Stress test the database with parallel user inserts
+async fn stress_test_database(pool: &PgPool, total_users: usize, concurrency: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Starting stress test with {} users at concurrency level {}", total_users, concurrency);
+    
+    // Ensure the users table exists - fixed query to properly check table existence
+    let table_exists = sqlx::query("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users')")
+        .fetch_one(pool)
+        .await?
+        .get::<bool, _>(0);
+    
+    if !table_exists {
+        println!("The users table doesn't exist. Creating it...");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                role VARCHAR(50) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        println!("Table 'users' created");
+    }
+    
+    // Track performance metrics
+    let start_time = std::time::Instant::now();
+    let mut successful_inserts = 0;
+    let mut failed_inserts = 0;
+    
+    // Generate random roles for variety
+    let roles = vec!["User", "Admin", "Manager", "Guest", "Developer"];
+    
+    // Medieval first names
+    let medieval_first_names = vec![
+        "Aelfric", "Aldwin", "Baldwin", "Cedric", "Edmund", "Godfrey", "Harold", "Leofric",
+        "Oswald", "Wilfrid", "Adelina", "Beatrice", "Cecily", "Eleanor", "Guinevere", "Isolde",
+        "Matilda", "Rohesia", "Sybil", "Yvonne", "William", "Richard", "Robert", "Hugh", "Roland",
+        "Giles", "Walter", "Henry", "Thomas", "John", "Agnes", "Alice", "Elaine", "Emma", "Joan",
+        "Margaret", "Marian", "Edith", "Godiva", "Maud"
+    ];
+    
+    // Shakespearean last names
+    let shakespearean_last_names = vec![
+        "Montague", "Capulet", "Othello", "Hamlet", "Macbeth", "Lear", "Prospero", "Oberon",
+        "Puck", "Lysander", "Demetrius", "Titania", "Portia", "Shylock", "Malvolio", "Orsino",
+        "Orlando", "Rosalind", "Falstaff", "Petruchio", "Ariel", "Caliban", "Polonius", "Laertes",
+        "Ophelia", "Macduff", "Banquo", "Desdemona", "Cordelia", "Goneril", "Regan", "Kent",
+        "Gloucester", "Albany", "Cornwall", "Feste", "Viola", "Sebastian", "Antonio", "Benvolio",
+        "Mercutio", "Tybalt", "Horatio", "Fortinbras", "Bottom"
+    ];
+    
+    // Process in batches of concurrency size
+    for batch_idx in 0..(total_users / concurrency + 1) {
+        let start_idx = batch_idx * concurrency;
+        let end_idx = std::cmp::min(start_idx + concurrency, total_users);
+        
+        if start_idx >= total_users {
+            break;
+        }
+        
+        println!("Processing batch {}: users {}-{}", batch_idx + 1, start_idx + 1, end_idx);
+        
+        // Create a vector to hold our join handles
+        let mut handles = Vec::new();
+        
+        // Start concurrent tasks
+        for i in start_idx..end_idx {
+            // Create unique test user data
+            let user_id = Uuid::new_v4();
+            
+            // Generate random name from medieval first name and Shakespearean last name
+            let first_name_idx = i % medieval_first_names.len();
+            let last_name_idx = (i * 7) % shakespearean_last_names.len(); // Use a different multiplier to vary combinations
+            let first_name = medieval_first_names[first_name_idx];
+            let last_name = shakespearean_last_names[last_name_idx];
+            let name = format!("{} {}", first_name, last_name);
+            
+            // Create email using the name with a unique identifier to avoid conflicts
+            let email = format!("{}.{}.{}@kingdommail.com", 
+                first_name.to_lowercase(), 
+                last_name.to_lowercase(),
+                user_id.simple());
+            
+            let role = roles[i % roles.len()];
+            
+            // Clone the pool for each task
+            let pool = pool.clone();
+            
+            // Spawn a new task for this insert
+            let handle = tokio::spawn(async move {
+                let result = insert_user(&pool, user_id, &name, &email, role).await;
+                (i, user_id, name, result)
+            });
+            
+            handles.push(handle);
+        }
+        
+        // Wait for all inserts in this batch to complete
+        for handle in handles {
+            match handle.await {
+                Ok((i, user_id, name, result)) => {
+                    match result {
+                        Ok(_) => {
+                            println!("Successfully inserted user #{} '{}' with ID: {}", i + 1, name, user_id);
+                            successful_inserts += 1;
+                        }
+                        Err(e) => {
+                            println!("Failed to insert user #{} '{}': {}", i + 1, name, e);
+                            failed_inserts += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Task joining error: {}", e);
+                    failed_inserts += 1;
+                }
+            }
+        }
+    }
+    
+    let elapsed = start_time.elapsed();
+    let total_seconds = elapsed.as_secs_f64();
+    let rate = successful_inserts as f64 / total_seconds;
+    
+    println!("\nStress Test Results:");
+    println!("--------------------");
+    println!("Total time: {:.2} seconds", total_seconds);
+    println!("Successful inserts: {}", successful_inserts);
+    println!("Failed inserts: {}", failed_inserts);
+    println!("Insert rate: {:.2} users/second", rate);
+    
+    Ok(())
+}
+
+/// Get statistics about users in the database
+async fn get_user_statistics(pool: &PgPool) -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Gathering user statistics...");
+
+    // Total user count
+    let total_count = sqlx::query("SELECT COUNT(*) as count FROM users")
+        .fetch_one(pool)
+        .await?
+        .get::<i64, _>("count");
+
+    // Count by role
+    let roles = sqlx::query(
+        r#"
+        SELECT role, COUNT(*) as count 
+        FROM users 
+        GROUP BY role 
+        ORDER BY count DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get newest and oldest user
+    let newest_user = sqlx::query(
+        r#"
+        SELECT name, email, created_at 
+        FROM users 
+        ORDER BY created_at DESC 
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let oldest_user = sqlx::query(
+        r#"
+        SELECT name, email, created_at 
+        FROM users 
+        ORDER BY created_at ASC 
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    // Get popular name prefixes
+    let popular_names = sqlx::query(
+        r#"
+        SELECT LEFT(name, POSITION(' ' IN name)) as first_name, COUNT(*) as count
+        FROM users
+        WHERE POSITION(' ' IN name) > 0
+        GROUP BY first_name
+        ORDER BY count DESC
+        LIMIT 5
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get user creation trends (users created by day)
+    let creation_trends = sqlx::query(
+        r#"
+        SELECT 
+            DATE(created_at) as date,
+            COUNT(*) as count
+        FROM users
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 7
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    
+    // Get creation time distribution (by hour of day)
+    let hour_distribution = sqlx::query(
+        r#"
+        SELECT 
+            EXTRACT(HOUR FROM created_at)::INT as hour,
+            COUNT(*) as count
+        FROM users
+        GROUP BY hour
+        ORDER BY hour
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    
+    // Get longest and shortest names
+    let name_extremes = sqlx::query(
+        r#"
+        SELECT 
+            (SELECT name FROM users ORDER BY LENGTH(name) DESC LIMIT 1) as longest_name,
+            (SELECT name FROM users ORDER BY LENGTH(name) ASC LIMIT 1) as shortest_name,
+            (SELECT AVG(LENGTH(name))::FLOAT8 FROM users) as avg_length
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    // Email domain statistics
+    let email_domains = sqlx::query(
+        r#"
+        SELECT 
+            SUBSTRING(email FROM POSITION('@' IN email) + 1) as domain,
+            COUNT(*) as count
+        FROM users
+        GROUP BY domain
+        ORDER BY count DESC
+        LIMIT 5
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Print statistics
+    println!("\n----- User Statistics -----");
+    println!("Total users: {}", total_count);
+    
+    println!("\nDistribution by role:");
+    for role in roles {
+        println!(
+            "- {}: {} users ({}%)",
+            role.get::<String, _>("role"),
+            role.get::<i64, _>("count"),
+            (role.get::<i64, _>("count") as f64 / total_count as f64 * 100.0).round()
+        );
+    }
+
+    if let Some(newest) = newest_user {
+        println!(
+            "\nNewest user: {} ({}) - Created: {}",
+            newest.get::<String, _>("name"),
+            newest.get::<String, _>("email"),
+            newest.get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+        );
+    }
+
+    if let Some(oldest) = oldest_user {
+        println!(
+            "Oldest user: {} ({}) - Created: {}",
+            oldest.get::<String, _>("name"),
+            oldest.get::<String, _>("email"),
+            oldest.get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+        );
+    }
+
+    // Print user creation trends
+    println!("\nUser creation trends (last 7 days):");
+    for trend in creation_trends {
+        println!(
+            "- {}: {} users",
+            trend.get::<chrono::NaiveDate, _>("date"),
+            trend.get::<i64, _>("count")
+        );
+    }
+    
+    // Print creation time distribution
+    println!("\nCreation time distribution (by hour of day):");
+    for hour in hour_distribution {
+        let hour_val = hour.get::<i32, _>("hour");
+        let count = hour.get::<i64, _>("count");
+        let bar = "█".repeat((count as f64 / total_count as f64 * 50.0) as usize);
+        println!(
+            "- {:02}:00: {:4} users {}",
+            hour_val,
+            count,
+            bar
+        );
+    }
+    
+    // Print name length information
+    println!("\nName length statistics:");
+    println!(
+        "- Longest name: {} ({} chars)",
+        name_extremes.get::<String, _>("longest_name"),
+        name_extremes.get::<String, _>("longest_name").len()
+    );
+    println!(
+        "- Shortest name: {} ({} chars)",
+        name_extremes.get::<String, _>("shortest_name"),
+        name_extremes.get::<String, _>("shortest_name").len()
+    );
+    println!(
+        "- Average name length: {:.1} characters",
+        name_extremes.get::<f64, _>("avg_length")
+    );
+
+    println!("\nMost common first names:");
+    for name in popular_names {
+        println!(
+            "- {}: {} users",
+            name.get::<String, _>("first_name"),
+            name.get::<i64, _>("count")
+        );
+    }
+
+    println!("\nMost common email domains:");
+    for domain in email_domains {
+        println!(
+            "- {}: {} users ({}%)",
+            domain.get::<String, _>("domain"),
+            domain.get::<i64, _>("count"),
+            (domain.get::<i64, _>("count") as f64 / total_count as f64 * 100.0).round()
+        );
+    }
+    
+    println!("\n---------------------------");
+
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let cli = Cli::parse();
 
     // Execute the appropriate command
@@ -368,6 +732,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("Closing connection pool...");
             pool.close().await;
             println!("Connection closed");
+        }
+        Commands::StressTest { users, concurrency } => {
+            // Create the database connection pool
+            let pool = create_connection_pool().await?;
+            stress_test_database(&pool, users, concurrency).await?;
+            // Close the connection pool
+            println!("Closing connection pool...");
+            pool.close().await;
+            println!("Connection closed");
+        }
+        Commands::UserStats => {
+            let pool = create_connection_pool().await?;
+            get_user_statistics(&pool).await?;
+            pool.close().await;
         }
         Commands::GenerateToken {
             region,

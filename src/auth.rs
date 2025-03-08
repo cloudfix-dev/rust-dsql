@@ -15,7 +15,7 @@ pub async fn generate_auth_token(
     cluster_endpoint: &str,
     region: &str,
     admin_user: bool,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error + Send + Sync>> {
     // Load AWS configuration
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
 
@@ -25,7 +25,7 @@ pub async fn generate_auth_token(
             .hostname(cluster_endpoint)
             .region(Region::new(region.to_string()))
             .build()
-            .map_err(|e| e as Box<dyn Error>)?,
+            .map_err(|e| e as Box<dyn Error + Send + Sync>)?,
     );
 
     // Generate the appropriate token based on whether we're connecting as admin or not
@@ -38,7 +38,7 @@ pub async fn generate_auth_token(
     // Handle result and convert to string
     match token {
         Ok(token) => Ok(token.to_string()),
-        Err(e) => Err(e as Box<dyn Error>),
+        Err(e) => Err(e as Box<dyn Error + Send + Sync>),
     }
 }
 
@@ -62,7 +62,7 @@ pub async fn get_connection_string(
     database: &str,
     region: &str,
     admin_user: bool,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error + Send + Sync>> {
     // Generate the auth token
     let token = generate_auth_token(host, region, admin_user).await?;
 
