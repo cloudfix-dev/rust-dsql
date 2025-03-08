@@ -1,14 +1,29 @@
 # Rust Aurora DSQL Demo with Authentication Tokens
 
-> This project was created during a livestream featuring Darko Mesaros and Stephen Barr.
+> This project was created during a livestream featuring [Darko Mesaros](https://www.linkedin.com/in/darko-mesaros/) and [Stephen Barr](https://www.linkedin.com/in/stephenjbarr/).
 > Watch the full session: [Building a Rust application with Aurora PostgreSQL Data API | AWS Livestream](https://www.youtube.com/watch?v=p2-V01XBHNg)
 
 ![Darko Mesaros and Stephen Barr during the Aurora DSQL & Rust livestream](./images/ame-darko-stephen.png)
 
-> For a deep dive into Amazon DSQL with Raluca Constantin and Dan Blaner, check out:
+> For a deep dive into Amazon DSQL with [Raluca Constantin](https://www.linkedin.com/in/constantinraluca/) and [Dan Blaner](https://www.linkedin.com/in/danblaner/), check out:
 > [Amazon DSQL: A relational database specifically designed for modern applications | AWS Events](https://www.youtube.com/watch?v=WuNlALS1wrM)
 
 ![Raluca Constantin and Dan Blaner presenting Amazon DSQL](./images/ame-raluca-dan.png)
+
+## What is Amazon Aurora DSQL?
+
+Amazon Aurora DSQL (Data SQL) is a new service-oriented database engine built on PostgreSQL that's specifically designed for modern, cloud-native applications. As described in the [official AWS announcement](https://aws.amazon.com/blogs/database/introducing-amazon-aurora-dsql/), DSQL combines the familiarity of PostgreSQL with innovative features optimized for microservices and serverless architectures.
+
+### Key Features of Aurora DSQL:
+
+- **Service-Oriented Architecture**: DSQL separates compute and storage layers, allowing them to scale independently and efficiently.
+- **Compatible with PostgreSQL**: Leverages PostgreSQL's SQL dialect and ecosystem, making it accessible to millions of developers.
+- **Optimized for Modern Workloads**: Designed for microservices, serverless, and other cloud-native application patterns.
+- **Simplified Operations**: Reduces administrative overhead with managed scaling, patching, and high availability.
+- **Enhanced Performance**: Optimized for high-throughput, low-latency operations common in modern applications.
+- **IAM Authentication**: Native integration with AWS Identity and Access Management for secure authentication without passwords.
+
+Aurora DSQL represents AWS's vision for the next generation of relational databases, addressing the needs of cloud-native applications while maintaining compatibility with familiar PostgreSQL interfaces and tools.
 
 A Rust application that demonstrates how to connect to an Amazon Aurora DSQL database using SQLx, including IAM authentication token generation.
 
